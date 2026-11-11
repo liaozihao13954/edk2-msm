@@ -23,6 +23,7 @@ jobs:
       options: --user root
     steps:
       - name: Tool check
+        shell: bash
         run: |
           # running as root inside the container: without this, git refuses to
           # operate on the mounted workspace ("dubious ownership")
@@ -42,12 +43,14 @@ jobs:
           fetch-depth: 1
 
       - name: Build UEFI image for lmi
+        shell: bash
         run: |
           set -o pipefail
           ./build.sh --device lmi 2>&1 | tee build.log
 
       - name: Collect produced images
         if: always()
+        shell: bash
         run: |
           mkdir -p out
           echo "--- all built images ---"
