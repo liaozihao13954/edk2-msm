@@ -53,7 +53,11 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          ./build.sh --device lmi 2>&1 | tee build.log
+          # --acpi is REQUIRED: GEN_ACPI defaults to false and build.sh then
+          # reuses the prebuilt DSDT.aml, silently ignoring every .asl edit.
+          # lmi.conf sets SPLIT_DSDT=true / USE_IASL=true, so this makes the
+          # build run `iasl -ve Dsdt.asl` and pick up our extra devices.
+          ./build.sh --device lmi --acpi 2>&1 | tee build.log
 
       - name: Collect produced images
         if: always()
