@@ -31,8 +31,15 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE" || true
           # edk2 scripts sometimes call bare `python`
           command -v python >/dev/null 2>&1 || ln -sf "$(command -v python3)" /usr/local/bin/python
+          # gettext's msgfmt is missing from this image; build.sh only uses it to
+          # emit SimpleInit locale .mo files, so a placeholder is enough.
+          if ! command -v msgfmt >/dev/null 2>&1; then
+            printf '#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do if [ "$1" = "-o" ]; then out="$2"; shift 2; else shift; fi; done\n[ -n "$out" ] && : > "$out"\nexit 0\n' > /usr/local/bin/msgfmt
+            chmod +x /usr/local/bin/msgfmt
+            echo "installed msgfmt shim"
+          fi
           echo "--- preinstalled toolchain ---"
-          for t in iasl nasm clang lld ld.lld dtc python3 python git make zip; do
+          for t in iasl nasm clang lld ld.lld dtc msgfmt python3 python git make zip; do
             printf '%-10s ' "$t"; command -v $t || echo "(missing)"
           done
 
