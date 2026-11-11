@@ -23,19 +23,25 @@ jobs:
       - name: Install build dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
+          # The runner image runs unattended-upgrades on boot, which holds the
+          # dpkg lock; apt then waits on it forever and the step looks "stuck".
+          sudo systemctl stop unattended-upgrades 2>/dev/null || true
+          sudo systemctl disable unattended-upgrades 2>/dev/null || true
+          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
+          sudo pkill -9 -f apt.systemd.daily 2>/dev/null || true
+          sleep 3
+          sudo rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+                     /var/cache/apt/archives/lock 2>/dev/null || true
+          sudo dpkg --configure -a || true
+
           PKGS="build-essential uuid-dev iasl git nasm python-is-python3 python3-pil python3-git gettext clang llvm lld gcc-aarch64-linux-gnu device-tree-compiler abootimg libssl-dev dosfstools zip"
-          # The runner image ships a usable apt index, so try installing first.
-          # `apt-get update` is what hangs when archive.ubuntu.com / the azure
-          # mirror is unreachable, so it is only a fallback, with hard timeouts.
-          if sudo apt-get install -y $PKGS; then
+          APTOPTS="-y -o DPkg::Lock::Timeout=180 -o Acquire::Retries=3 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25"
+          if sudo apt-get install $APTOPTS $PKGS; then
             echo "installed from cached index"
           else
-            echo "cached index insufficient, refreshing"
-            sudo apt-get update \
-              -o Acquire::Retries=2 \
-              -o Acquire::http::Timeout=20 \
-              -o Acquire::https::Timeout=20 || true
-            sudo apt-get install -y $PKGS
+            echo "refreshing index"
+            sudo apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=25 || true
+            sudo apt-get install $APTOPTS $PKGS
           fi
           echo "--- tool check ---"
           which iasl nasm dtc clang python3 git
