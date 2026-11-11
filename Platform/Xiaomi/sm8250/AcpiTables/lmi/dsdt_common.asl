@@ -34,6 +34,11 @@ Name (SKUV, 0x1)                // Set SKU Version to 1
         // Storage - UFS/SD 
         //
         Include("ufs.asl")
+
+        //
+        // WoA: GPIO / I2C / USB XHCI
+        //
+        Include("win_buses.asl")
         // Include("sdc.asl") // No SD support on polaris
         
         //
