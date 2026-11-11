@@ -1,0 +1,58 @@
+# Build an edk2-msm UEFI image for Redmi K30 Pro (lmi / lmipro, SM8250).
+# Intended to be placed at .github/workflows/build_lmi.yml in a fork of
+# edk2-porting/edk2-msm, then triggered with workflow_dispatch on master.
+name: Build lmi UEFI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+
+jobs:
+  build:
+    name: Build boot-lmi.img
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential uuid-dev iasl git nasm python-is-python3 \
+            python3-pil python3-git gettext clang llvm lld \
+            gcc-aarch64-linux-gnu device-tree-compiler abootimg \
+            libssl-dev libsdl2-dev dosfstools zip
+
+      - name: Build UEFI image for lmi
+        run: |
+          set -o pipefail
+          ./build.sh --device lmi 2>&1 | tee build.log
+
+      - name: Collect produced images
+        if: always()
+        run: |
+          mkdir -p out
+          echo "--- all built images ---"
+          find . -maxdepth 6 \( -name '*.img' -o -name '*.fd' \) \
+            -printf '%p %s bytes\n' | head -60 | tee image-list.txt
+          find . -maxdepth 6 \( -name '*.img' -o -name '*.fd' \) \
+            -size +100k -exec cp -v {} out/ \; 2>/dev/null || true
+          cp -v build.log out/ 2>/dev/null || true
+          cp -v image-list.txt out/ 2>/dev/null || true
+          echo "--- out ---"
+          ls -lh out/
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-lmi
+          path: out/
+          if-no-files-found: warn
+          retention-days: 30
