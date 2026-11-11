@@ -22,12 +22,15 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
+            -o Acquire::https::Timeout=30 || sudo apt-get update
           sudo apt-get install -y \
+            -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
             build-essential uuid-dev iasl git nasm python-is-python3 \
             python3-pil python3-git gettext clang llvm lld \
             gcc-aarch64-linux-gnu device-tree-compiler abootimg \
-            libssl-dev libsdl2-dev dosfstools zip
+            libssl-dev dosfstools zip
 
       - name: Build UEFI image for lmi
         run: |
