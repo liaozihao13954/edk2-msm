@@ -49,11 +49,11 @@ Device (I2C0)
     }
 }
 
-// Primary USB3 controller as a plain XHCI so Windows can use the inbox
+// Primary USB3 controller. QCOM25A6 binds QcXhciFilter8250 (lower filter
 // usbxhci.sys / USBHUB3 stack (no Qualcomm driver dependency).
 Device (XHC0)
 {
-    Name (_HID, "PNP0D10")
+    Name (_HID, "QCOM25A6")
     Name (_CID, "PNP0D10")
     Name (_UID, 0)
     Method (_STA, 0) { Return (0xF) }
