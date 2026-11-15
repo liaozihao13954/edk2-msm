@@ -60,14 +60,12 @@ Device (TPD0)
 
     Method (_STA, 0, NotSerialized) { Return (0x0F) }
 
-    // TLMM window covering GPIO36_CFG (0x0F024000) and GPIO37_CFG (0x0F025000)
-    OperationRegion (TLMM, SystemMemory, 0x0F024000, 0x00002000)
-    Field (TLMM, DWordAcc, NoLock, Preserve)
-    {
-        GCFG,   32,                     // GPIO36_CFG @ 0x0F024000
-        Offset (0x1000),
-        GCFH,   32                      // GPIO37_CFG @ 0x0F025000
-    }
+    // TLMM GPIO_CFG registers, one OperationRegion each (no Offset() trickery)
+    OperationRegion (TLM0, SystemMemory, 0x0F024000, 0x00000004)   // GPIO36 (SDA)
+    Field (TLM0, DWordAcc, NoLock, Preserve) { GCFG, 32 }
+
+    OperationRegion (TLM1, SystemMemory, 0x0F025000, 0x00000004)   // GPIO37 (SCL)
+    Field (TLM1, DWordAcc, NoLock, Preserve) { GCFH, 32 }
 
     // Runs before hidi2c starts, so the pins are already owned by QUP13 when
     // the first I2C-HID descriptor read happens.
