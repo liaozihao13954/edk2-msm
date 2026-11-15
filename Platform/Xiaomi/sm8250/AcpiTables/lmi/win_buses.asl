@@ -53,7 +53,7 @@ Device (I2C0)
 // usbxhci.sys / USBHUB3 stack (no Qualcomm driver dependency).
 Device (XHC0)
 {
-    Name (_HID, "QCOM25A6")
+    Name (_HID, "PNP0D10")
     Name (_CID, "PNP0D10")
     Name (_UID, 0)
     Method (_STA, 0) { Return (0xF) }
