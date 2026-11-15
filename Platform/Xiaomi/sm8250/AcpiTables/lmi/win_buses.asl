@@ -36,7 +36,7 @@ Device (GPIO)
 Device (I2C0)
 {
     Name (_HID, "QCOM2511")
-    Name (_UID, 10)
+    Name (_UID, 13)
     Method (_STA, 0) { Return (0xF) }
     Method (_CRS, 0, NotSerialized)
     {
