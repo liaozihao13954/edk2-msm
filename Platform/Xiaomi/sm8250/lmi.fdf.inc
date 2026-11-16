@@ -20,3 +20,6 @@ FILE FREEFORM = 7E374E25-8E01-4FEE-87F2-390C23C606CD {
 FILE FREEFORM = 25462CDA-221F-47DF-AC1D-259CFAA4E326 {
   SECTION RAW = Platform/Xiaomi/sm8250/FdtBlob_compat/lmi.dtb
 }
+
+// touch panel power (pm8150a LDO1)
+INF Platform/Xiaomi/sm8250/Drivers/LmiTouchPower/LmiTouchPower.inf
