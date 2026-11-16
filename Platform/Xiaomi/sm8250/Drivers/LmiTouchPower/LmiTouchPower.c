@@ -44,7 +44,7 @@
 #include <Protocol/EFII2C.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/BlockIo.h>
-#include <Protocol/Bds.h>
+#include <Guid/EventGroup.h>
 
 //
 // QcomPkg.dec exports the I2C protocol as gQcomI2cProtocolGuid (lowercase "c")
@@ -727,9 +727,20 @@ ClearResetFlag (
   File->Close (File);
 }
 
-STATIC EFI_EVENT  mFsEvent   = NULL;
-STATIC EFI_EVENT  mBdsEvent  = NULL;
-STATIC BOOLEAN    mWorkDone  = FALSE;
+//
+// Scheduling.  The driver must run after the FAT stack is up (otherwise there
+// is no way to persist the transcript) but before Windows starts.  A protocol
+// notify is useless here: if this driver is dispatched late - and on this
+// platform it is, because the PMIC VREG protocol only appears during BDS's
+// connect-all pass - the protocols are already installed and the notification
+// never fires.  So: run right away if a volume exists, otherwise wait for
+// ReadyToBoot (which BDS signals after everything is connected, immediately
+// before loading Windows) with a periodic timer as the last resort.
+//
+STATIC EFI_EVENT  mReadyEvent = NULL;
+STATIC EFI_EVENT  mTimer      = NULL;
+STATIC UINTN      mTicks      = 0;
+STATIC BOOLEAN    mWorkDone   = FALSE;
 
 STATIC
 VOID
@@ -765,11 +776,6 @@ FsPresent (
   return Present;
 }
 
-//
-// Runs once.  Preferred path: a FAT volume is already mounted, so the whole
-// transcript can be persisted.  Fallback (BDS has started and still no volume):
-// power the panel blind rather than leave it unpowered for Windows.
-//
 STATIC
 VOID
 EFIAPI
@@ -782,20 +788,50 @@ OnDeferredWork (
     return;
   }
 
-  FindEsp ();
   mWorkDone = TRUE;
 
-  if (mFsEvent != NULL) {
-    gBS->CloseEvent (mFsEvent);
-    mFsEvent = NULL;
+  if (mReadyEvent != NULL) {
+    gBS->CloseEvent (mReadyEvent);
+    mReadyEvent = NULL;
   }
 
-  if (mBdsEvent != NULL) {
-    gBS->CloseEvent (mBdsEvent);
-    mBdsEvent = NULL;
+  if (mTimer != NULL) {
+    gBS->CloseEvent (mTimer);
+    mTimer = NULL;
   }
 
+  FindEsp ();
   DoWork ();
+}
+
+STATIC
+VOID
+EFIAPI
+OnTimer (
+  IN EFI_EVENT  Event,
+  IN VOID      *Context
+  )
+{
+  CHAR8  Line[120];
+
+  if (mWorkDone) {
+    return;
+  }
+
+  mTicks++;
+  if ((mTicks % 5) == 0) {
+    AsciiSPrint (Line, sizeof (Line), "WAIT: %u s, file system present=%u, esp=%u",
+                 (UINT32)mTicks, FsPresent () ? 1 : 0, mEspOk ? 1 : 0);
+    LmiPrint (L"LMI: %a\r\n", Line);
+  }
+
+  //
+  // ~15 s without ReadyToBoot means this boot is not going to reach Windows in
+  // a normal way; power the panel anyway rather than leave it dead.
+  //
+  if (mTicks >= 15) {
+    OnDeferredWork (Event, Context);
+  }
 }
 
 STATIC
@@ -883,12 +919,8 @@ LmiTouchPowerEntry (
 
   LmiPrint (L"\r\nLMI: LmiTouchPower v3 entry\r\n");
 
-  //
-  // Telemetry first.  If the FAT stack is not up yet the driver parks itself on
-  // a protocol notify instead of writing into the void; BDS entry is the last
-  // chance to run even without a volume.
-  //
   if (FsPresent ()) {
+    LmiPrint (L"LMI: volume already mounted, running now\r\n");
     OnDeferredWork (NULL, NULL);
     return EFI_SUCCESS;
   }
@@ -898,27 +930,26 @@ LmiTouchPowerEntry (
                   TPL_CALLBACK,
                   OnDeferredWork,
                   NULL,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  &mFsEvent
+                  &gEfiEventReadyToBootGuid,
+                  &mReadyEvent
                   );
   if (EFI_ERROR (Status)) {
-    LmiPrint (L"LMI: cannot wait for the file system (%r), running now\r\n", Status);
+    mReadyEvent = NULL;
+  }
+
+  Status = gBS->CreateEvent (EVT_TIMER, TPL_CALLBACK, OnTimer, NULL, &mTimer);
+  if (!EFI_ERROR (Status)) {
+    gBS->SetTimer (mTimer, TimerPeriodic, 10000000);   // 1 s
+  } else {
+    mTimer = NULL;
+  }
+
+  if ((mReadyEvent == NULL) && (mTimer == NULL)) {
+    LmiPrint (L"LMI: no way to defer, running now\r\n");
     OnDeferredWork (NULL, NULL);
-    return EFI_SUCCESS;
+  } else {
+    LmiPrint (L"LMI: deferred until ReadyToBoot\r\n");
   }
 
-  Status = gBS->CreateEventEx (
-                  EVT_NOTIFY_SIGNAL,
-                  TPL_CALLBACK,
-                  OnDeferredWork,
-                  NULL,
-                  &gEfiBdsArchProtocolGuid,
-                  &mBdsEvent
-                  );
-  if (EFI_ERROR (Status)) {
-    mBdsEvent = NULL;
-  }
-
-  LmiPrint (L"LMI: waiting for a file system volume...\r\n");
   return EFI_SUCCESS;
 }
