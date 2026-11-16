@@ -39,6 +39,7 @@
 #include <Library/BaseMemoryLib.h>
 #include <Library/PrintLib.h>
 #include <Library/DebugLib.h>
+#include <Library/DxeServicesTableLib.h>
 #include <Protocol/EFIPmicVreg.h>
 #include <Protocol/EFITlmm.h>
 #include <Protocol/EFII2C.h>
@@ -69,7 +70,9 @@ extern EFI_GUID  gQcomI2cProtocolGuid;
 // TLMM GPIO_CFGn = 0x0F000000 + 0x1000 * n   (kona / SM8250)
 // [1:0] PULL, [9:2] FUNC_SEL, [12:10] DRV, [13] OE
 //
-#define TLMM_GPIO_CFG(n)      (0x0F000000U + 0x1000U * (n))
+#define TLMM_BASE             0x0F000000U
+#define TLMM_SIZE             0x00300000U
+#define TLMM_GPIO_CFG(n)      (TLMM_BASE + 0x1000U * (n))
 #define TLMM_FUNC_QUP13       119U
 #define TLMM_MASK_PULL_FUNC   0xFFFFFC03U
 
@@ -91,6 +94,12 @@ extern EFI_GUID  gQcomI2cProtocolGuid;
 STATIC
 VOID
 Report (
+  VOID
+  );
+
+STATIC
+VOID
+MapTlmmMmio (
   VOID
   );
 
@@ -275,6 +284,49 @@ PowerUpTouchRail (
     TxLine (Buf);
     Report ();
   }
+}
+
+//
+// The DXE page table does not necessarily cover the TLMM register window.  A
+// raw read of 0x0F024000 produced exactly this on the real device:
+//   ESR 0x82000006, FAR 0x000000000F024000, "Translation fault, third level".
+// Register the window as MMIO/UC so the DSDT-style register poke is legal.
+//
+STATIC
+VOID
+MapTlmmMmio (
+  VOID
+  )
+{
+  EFI_GCD_MEMORY_SPACE_DESCRIPTOR  Desc;
+  EFI_STATUS                       Status;
+  CHAR8                            Buf[200];
+
+  Status = gDS->GetMemorySpaceDescriptor (TLMM_BASE, &Desc);
+  AsciiSPrint (
+    Buf, sizeof (Buf),
+    "MMIO: descriptor @0x%08x -> %r (type=%u)",
+    TLMM_BASE, Status, (UINTN)Desc.GcdMemoryType
+    );
+  TxLine (Buf);
+  Report ();
+
+  if (EFI_ERROR (Status)) {
+    Status = gDS->AddMemorySpace (
+                    EfiGcdMemoryTypeMemoryMappedIo,
+                    TLMM_BASE,
+                    TLMM_SIZE,
+                    EFI_MEMORY_UC
+                    );
+    AsciiSPrint (Buf, sizeof (Buf), "MMIO: AddMemorySpace -> %r", Status);
+    TxLine (Buf);
+    Report ();
+  }
+
+  Status = gDS->SetMemorySpaceAttributes (TLMM_BASE, TLMM_SIZE, EFI_MEMORY_UC);
+  AsciiSPrint (Buf, sizeof (Buf), "MMIO: SetMemorySpaceAttributes(UC) -> %r", Status);
+  TxLine (Buf);
+  Report ();
 }
 
 /* ----------------------------------------------------------------- gpio ---- */
@@ -923,6 +975,7 @@ DoWork (
 
   if (Mux) {
     TxLine ("STEP: TLMM mux GPIO36/37 -> qup13");
+    MapTlmmMmio ();
     MuxI2cPins ();
     Report ();
   }
@@ -989,7 +1042,7 @@ LmiTouchPowerEntry (
 
   Status = gBS->CreateEventEx (
                   EVT_NOTIFY_SIGNAL,
-                  TPL_CALLBACK,
+                  TPL_APPLICATION,
                   OnDeferredWork,
                   NULL,
                   &gEfiEventReadyToBootGuid,
@@ -999,7 +1052,7 @@ LmiTouchPowerEntry (
     mReadyEvent = NULL;
   }
 
-  Status = gBS->CreateEvent (EVT_TIMER, TPL_CALLBACK, OnTimer, NULL, &mTimer);
+  Status = gBS->CreateEvent (EVT_TIMER, TPL_APPLICATION, OnTimer, NULL, &mTimer);
   if (!EFI_ERROR (Status)) {
     gBS->SetTimer (mTimer, TimerPeriodic, 10000000);   // 1 s
   } else {
