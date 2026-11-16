@@ -401,6 +401,9 @@ ProbeTouchChip (
 
 /* --------------------------------------------------------------- report ---- */
 
+STATIC EFI_FILE_PROTOCOL  *mRoot  = NULL;    // root of the volume holding Windows
+STATIC BOOLEAN             mEspOk = FALSE;
+
 STATIC
 EFI_STATUS
 ExistOnVolume (
@@ -421,70 +424,68 @@ ExistOnVolume (
 }
 
 STATIC
-BOOLEAN
-CheckProbeFlag (
-  IN  EFI_FILE_PROTOCOL  *Root,
-  OUT EFI_STATUS         *DeleteStatus
-  )
-{
-  EFI_STATUS         Status;
-  EFI_FILE_PROTOCOL  *File;
-
-  *DeleteStatus = EFI_NOT_FOUND;
-  File          = NULL;
-  Status        = Root->Open (
-                           Root,
-                           &File,
-                           FILE_NAME (LMI_PROBE_FLAG),
-                           EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE,
-                           0
-                           );
-  if (EFI_ERROR (Status) || (File == NULL)) {
-    return FALSE;
-  }
-
-  *DeleteStatus = File->Delete (File);
-  return TRUE;
-}
-
-STATIC
 VOID
-WriteReport (
-  OUT BOOLEAN  *DidReset
+FindEsp (
+  VOID
   )
 {
-  EFI_STATUS                       Status;
   EFI_HANDLE                       *Handles;
   UINTN                             Count;
   UINTN                             Index;
   EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
   EFI_FILE_PROTOCOL                *Root;
-  EFI_FILE_PROTOCOL                *File;
-  EFI_BLOCK_IO_PROTOCOL            *Blk;
   CHAR8                             Line[200];
-  BOOLEAN                           Found;
-  UINTN                             Size;
 
-  *DidReset = FALSE;
-  Handles   = NULL;
-  Count     = 0;
-  Found     = FALSE;
-  Root      = NULL;
+  mRoot  = NULL;
+  mEspOk = FALSE;
+  Handles = NULL;
+  Count   = 0;
 
-  TxAdd ("TX-BYTES: %u\r\nEND\r\n", (UINT32)mTxLen);
+  if (EFI_ERROR (gBS->LocateHandleBuffer (
+                        ByProtocol,
+                        &gEfiSimpleFileSystemProtocolGuid,
+                        NULL,
+                        &Count,
+                        &Handles
+                        )))
+  {
+    TxLine ("ESP: no file system handles");
+    return;
+  }
 
-  Status = gBS->LocateHandleBuffer (
-                  ByProtocol,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  NULL,
-                  &Count,
-                  &Handles
-                  );
-  if (EFI_ERROR (Status)) {
-    TxFail ("no file system handles", Status);
-  } else {
-    AsciiSPrint (Line, sizeof (Line), "ESP: %u file system volume(s)", (UINT32)Count);
-    TxLine (Line);
+  AsciiSPrint (Line, sizeof (Line), "ESP: %u volume(s)", (UINT32)Count);
+  TxLine (Line);
+
+  //
+  // Pass 1: the volume that actually carries a Windows loader.  The firmware
+  // may start bootmgfw.efi or (more likely here) \EFI\BOOT\BOOTAA64.EFI.
+  //
+  for (Index = 0; Index < Count; Index++) {
+    Fs   = NULL;
+    Root = NULL;
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs))) {
+      continue;
+    }
+    if (EFI_ERROR (Fs->OpenVolume (Fs, &Root)) || (Root == NULL)) {
+      continue;
+    }
+    if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"))) {
+      TxLine ("ESP: matched bootmgfw.efi");
+      mRoot = Root;
+      break;
+    }
+    if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\BOOT\\BOOTAA64.EFI"))) {
+      TxLine ("ESP: matched BOOTAA64.EFI");
+      mRoot = Root;
+      break;
+    }
+    Root->Close (Root);
+  }
+
+  //
+  // Pass 2: last resort - any volume that even has an \EFI directory.
+  //
+  if (mRoot == NULL) {
     for (Index = 0; Index < Count; Index++) {
       Fs   = NULL;
       Root = NULL;
@@ -494,122 +495,235 @@ WriteReport (
       if (EFI_ERROR (Fs->OpenVolume (Fs, &Root)) || (Root == NULL)) {
         continue;
       }
-
-      //
-      // Windows may have been installed with bootmgfw, or the firmware may be
-      // starting \EFI\BOOT\BOOTAA64.EFI straight away, so accept either.
-      //
-      if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"))) {
-        TxLine ("ESP: matched \\EFI\\Microsoft\\Boot\\bootmgfw.efi");
-        Found = TRUE;
+      if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI"))) {
+        TxLine ("ESP: fallback volume with \\EFI");
+        mRoot = Root;
         break;
       }
-      if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\BOOT\\BOOTAA64.EFI"))) {
-        TxLine ("ESP: matched \\EFI\\BOOT\\BOOTAA64.EFI");
-        Found = TRUE;
-        break;
-      }
-      if (Root != NULL) {
-        Root->Close (Root);
-        Root = NULL;
-      }
-    }
-
-    //
-    // Last resort: any volume that even has an \EFI directory.
-    //
-    if ((!Found) && (Count > 0)) {
-      for (Index = 0; Index < Count; Index++) {
-        Root = NULL;
-        if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs))) {
-          continue;
-        }
-        if (EFI_ERROR (Fs->OpenVolume (Fs, &Root)) || (Root == NULL)) {
-          continue;
-        }
-        if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI"))) {
-          TxLine ("ESP: fallback volume with \\EFI");
-          Found = TRUE;
-          break;
-        }
-        Root->Close (Root);
-        Root = NULL;
-      }
+      Root->Close (Root);
     }
   }
 
-  if (Found && (Root != NULL)) {
+  gBS->FreePool (Handles);
 
-    //
-    // probe flag first: delete it before anything else so a failed run can
-    // never turn into a boot loop.
-    //
-    if (CheckProbeFlag (Root, &Status)) {
-      *DidReset = !EFI_ERROR (Status);
-      AsciiSPrint (Line, sizeof (Line), "ESP: probe flag present, delete -> %r", Status);
-      TxLine (Line);
+  mEspOk = (mRoot != NULL);
+  if (!mEspOk) {
+    TxLine ("ESP: not found, telemetry unavailable");
+  }
+}
+
+STATIC
+BOOLEAN
+CfgFlag (
+  IN CONST CHAR8  *Buf,
+  IN UINTN         Len,
+  IN CONST CHAR8  *Key,
+  IN BOOLEAN       Default
+  )
+{
+  UINTN  KeyLen;
+  UINTN  i;
+
+  KeyLen = AsciiStrLen (Key);
+  for (i = 0; i + KeyLen + 1 < Len; i++) {
+    if (AsciiStrnCmp (Buf + i, Key, KeyLen) != 0) {
+      continue;
     }
-
-    File   = NULL;
-    Status = Root->Open (Root, &File, FILE_NAME (LMI_TX_FILE), EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
-    if (!EFI_ERROR (Status) && (File != NULL)) {
-      File->Delete (File);
+    if (Buf[i + KeyLen] != '=') {
+      continue;
     }
-
-    File   = NULL;
-    Status = Root->Open (
-                     Root,
-                     &File,
-                     FILE_NAME (LMI_TX_FILE),
-                     EFI_FILE_MODE_CREATE | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_READ,
-                     0
-                     );
-    if (!EFI_ERROR (Status) && (File != NULL)) {
-      Size   = mTxLen;
-      Status = File->Write (File, &Size, mTx);
-      File->Flush (File);
-      File->Close (File);
-      AsciiSPrint (Line, sizeof (Line), "ESP: wrote LMI_TX.TXT (%u bytes) -> %r", (UINT32)Size, Status);
-      TxLine (Line);
-    } else {
-      TxFail ("ESP: create LMI_TX.TXT", Status);
+    if (Buf[i + KeyLen + 1] == '1') {
+      return TRUE;
     }
-
-    Root->Close (Root);
-  } else {
-    TxLine ("ESP: not found, no file telemetry");
+    if (Buf[i + KeyLen + 1] == '0') {
+      return FALSE;
+    }
   }
 
-  if (Handles != NULL) {
-    gBS->FreePool (Handles);
+  return Default;
+}
+
+STATIC
+VOID
+LoadCfg (
+  OUT BOOLEAN  *Mux,
+  OUT BOOLEAN  *Gpio,
+  OUT BOOLEAN  *Vreg,
+  OUT BOOLEAN  *I2c,
+  OUT BOOLEAN  *Reset
+  )
+{
+  EFI_FILE_PROTOCOL  *File;
+  EFI_STATUS          Status;
+  CHAR8               Buf[257];
+  CHAR8               Line[200];
+  UINTN               Size;
+
+  *Mux   = TRUE;
+  *Gpio  = TRUE;
+  *Vreg  = TRUE;
+  *I2c   = TRUE;
+  *Reset = (LMI_PROBE_ALWAYS_RESET != 0);
+
+  if (mRoot == NULL) {
+    return;
   }
 
-  //
-  // Backup channel: raw sectors at the tail of the 512 MiB ESP.  Independent
-  // of the FAT driver, readable with plain `dd` from Android/TWRP.
-  //
+  File   = NULL;
+  Status = mRoot->Open (mRoot, &File, FILE_NAME (L"\\LMI_CFG.TXT"), EFI_FILE_MODE_READ, 0);
+  if (EFI_ERROR (Status) || (File == NULL)) {
+    TxLine ("CFG: no LMI_CFG.TXT, defaults (all steps on)");
+    return;
+  }
+
+  ZeroMem (Buf, sizeof (Buf));
+  Size = 256;
+  File->Read (File, &Size, Buf);
+  File->Close (File);
+
+  *Mux   = CfgFlag (Buf, 256, "MUX",   *Mux);
+  *Gpio  = CfgFlag (Buf, 256, "GPIO",  *Gpio);
+  *Vreg  = CfgFlag (Buf, 256, "VREG",  *Vreg);
+  *I2c   = CfgFlag (Buf, 256, "I2C",   *I2c);
+  *Reset = CfgFlag (Buf, 256, "RESET", *Reset);
+
+  AsciiSPrint (
+    Line, sizeof (Line),
+    "CFG: MUX=%u GPIO=%u VREG=%u I2C=%u RESET=%u",
+    *Mux ? 1 : 0, *Gpio ? 1 : 0, *Vreg ? 1 : 0, *I2c ? 1 : 0, *Reset ? 1 : 0
+    );
+  TxLine (Line);
+}
+
+//
+// Both channels carry the whole transcript, so whichever one survives tells us
+// how far the driver got.  Raw block I/O is done first: it needs no FAT code.
+//
+STATIC
+VOID
+WriteRawTail (
+  VOID
+  )
+{
+  EFI_HANDLE             *Handles;
+  UINTN                   Count;
+  UINTN                   Index;
+  EFI_BLOCK_IO_PROTOCOL  *Blk;
+  CHAR8                   Line[160];
+
   Handles = NULL;
   Count   = 0;
-  Status  = gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles);
-  if (!EFI_ERROR (Status)) {
-    for (Index = 0; Index < Count; Index++) {
-      Blk = NULL;
-      if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&Blk))) {
-        continue;
-      }
-      if ((Blk->Media == NULL) || (Blk->Media->LastBlock != LMI_ESP_SECTORS)) {
-        continue;
-      }
-      Status = Blk->WriteBlocks (Blk, Blk->Media->MediaId, LMI_ESP_SECTORS - 16, 1024, mTx);
-      AsciiSPrint (Line, sizeof (Line), "RAW: esp tail write -> %r", Status);
-      TxLine (Line);
-      break;
+  if (EFI_ERROR (gBS->LocateHandleBuffer (ByProtocol, &gEfiBlockIoProtocolGuid, NULL, &Count, &Handles))) {
+    return;
+  }
+
+  for (Index = 0; Index < Count; Index++) {
+    Blk = NULL;
+    if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiBlockIoProtocolGuid, (VOID **)&Blk))) {
+      continue;
     }
-    gBS->FreePool (Handles);
+    if ((Blk->Media == NULL) || (Blk->Media->LastBlock != LMI_ESP_SECTORS)) {
+      continue;
+    }
+    Blk->WriteBlocks (Blk, Blk->Media->MediaId, LMI_ESP_SECTORS - 64, 4096, mTx);
+    AsciiSPrint (Line, sizeof (Line), "RAW: tail write of %u bytes", (UINT32)mTxLen);
+    TxLine (Line);
+    break;
+  }
+
+  gBS->FreePool (Handles);
+}
+
+STATIC
+VOID
+Report (
+  VOID
+  )
+{
+  EFI_FILE_PROTOCOL  *File;
+  EFI_STATUS          Status;
+  UINTN               Size;
+
+  WriteRawTail ();
+
+  if (mRoot == NULL) {
+    return;
+  }
+
+  //
+  // delete + create so a shorter report never leaves stale tail bytes
+  //
+  File = NULL;
+  if (!EFI_ERROR (mRoot->Open (mRoot, &File, FILE_NAME (LMI_TX_FILE),
+                               EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))
+      && (File != NULL))
+  {
+    File->Delete (File);
+  }
+
+  File   = NULL;
+  Status = mRoot->Open (
+                    mRoot,
+                    &File,
+                    FILE_NAME (LMI_TX_FILE),
+                    EFI_FILE_MODE_CREATE | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_READ,
+                    0
+                    );
+  if (!EFI_ERROR (Status) && (File != NULL)) {
+    Size = mTxLen;
+    File->Write (File, &Size, mTx);
+    File->Flush (File);
+    File->Close (File);
   }
 }
 
 /* ------------------------------------------------------------------ main --- */
+
+//
+// Rewrite RESET=1 as RESET=0 in the config before resetting: a boot that dies
+// before it can report must never turn into a reset loop.
+//
+STATIC
+VOID
+ClearResetFlag (
+  VOID
+  )
+{
+  EFI_FILE_PROTOCOL  *File;
+  EFI_STATUS          Status;
+  CHAR8               Buf[257];
+  UINTN               Size;
+  UINTN               i;
+
+  if (mRoot == NULL) {
+    return;
+  }
+
+  File   = NULL;
+  Status = mRoot->Open (mRoot, &File, FILE_NAME (L"\\LMI_CFG.TXT"),
+                        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+  if (EFI_ERROR (Status) || (File == NULL)) {
+    return;
+  }
+
+  ZeroMem (Buf, sizeof (Buf));
+  Size = 256;
+  Status = File->Read (File, &Size, Buf);
+  if (!EFI_ERROR (Status)) {
+    for (i = 0; i + 7 < Size; i++) {
+      if ((AsciiStrnCmp (Buf + i, "RESET", 5) == 0) && (Buf[i + 5] == '=') && (Buf[i + 6] == '1')) {
+        Buf[i + 6] = '0';
+        File->SetPosition (File, 0);
+        Size = (Size < 256) ? 256 : Size;
+        File->Write (File, &Size, Buf);
+        File->Flush (File);
+        break;
+      }
+    }
+  }
+
+  File->Close (File);
+}
 
 EFI_STATUS
 EFIAPI
@@ -620,37 +734,67 @@ LmiTouchPowerEntry (
 {
   EFI_QCOM_TLMM_PROTOCOL  *Tlmm;
   EFI_STATUS               Status;
-  BOOLEAN                  DoReset;
+  BOOLEAN                  Mux;
+  BOOLEAN                  Gpio;
+  BOOLEAN                  Vreg;
+  BOOLEAN                  I2c;
+  BOOLEAN                  Reset;
 
-  LmiPrint (L"\r\nLMI: LmiTouchPower v2 start\r\n");
-  TxLine ("LMI-TOUCH-PROBE v2");
+  LmiPrint (L"\r\nLMI: LmiTouchPower v3 start\r\n");
+  TxLine ("LMI-TOUCH-PROBE v3");
 
-  PowerUpTouchRail ();
+  //
+  // Establish the telemetry channel before touching any hardware: if the phone
+  // dies later we still know which step killed it.
+  //
+  FindEsp ();
+  LoadCfg (&Mux, &Gpio, &Vreg, &I2c, &Reset);
+  TxLine ("HEARTBEAT: driver entered, telemetry channel open");
+  Report ();
 
-  MuxI2cPins ();
-
-  Tlmm   = NULL;
-  Status = gBS->LocateProtocol (&gQcomTlmmProtocolGuid, NULL, (VOID **)&Tlmm);
-  if (EFI_ERROR (Status) || (Tlmm == NULL)) {
-    TxFail ("TLMM protocol missing", Status);
-  } else {
-    DriveGpio (Tlmm, LMI_TOUCH_GPIO_VDD, "VDD");
-    gBS->Stall (20000);
-    DriveGpio (Tlmm, LMI_TOUCH_GPIO_RST, "RST");
+  if (Vreg) {
+    TxLine ("STEP: VREG (pm8150a LDO1 1.8V)");
+    PowerUpTouchRail ();
+    Report ();
   }
 
-  //
-  // panel needs ~100 ms after reset release before it answers on I2C
-  //
-  gBS->Stall (120000);
-  ProbeTouchChip ();
+  if (Mux) {
+    TxLine ("STEP: TLMM mux GPIO36/37 -> qup13");
+    MuxI2cPins ();
+    Report ();
+  }
 
-  WriteReport (&DoReset);
+  if (Gpio) {
+    TxLine ("STEP: GPIO72 vdd + GPIO38 reset");
+    Tlmm   = NULL;
+    Status = gBS->LocateProtocol (&gQcomTlmmProtocolGuid, NULL, (VOID **)&Tlmm);
+    if (EFI_ERROR (Status) || (Tlmm == NULL)) {
+      TxFail ("TLMM protocol missing", Status);
+    } else {
+      DriveGpio (Tlmm, LMI_TOUCH_GPIO_VDD, "VDD");
+      gBS->Stall (20000);
+      DriveGpio (Tlmm, LMI_TOUCH_GPIO_RST, "RST");
+    }
+    Report ();
+  }
 
-  LmiPrint (L"LMI: LmiTouchPower done (errors=%u, reset=%u, forced=%u)\r\n\r\n",
-            (UINT32)mErr, DoReset ? 1 : 0, LMI_PROBE_ALWAYS_RESET);
+  if (I2c) {
+    TxLine ("STEP: I2C self test");
+    //
+    // panel needs ~100 ms after reset release before it answers on I2C
+    //
+    gBS->Stall (120000);
+    ProbeTouchChip ();
+    Report ();
+  }
 
-  if (DoReset || LMI_PROBE_ALWAYS_RESET) {
+  TxLine ("DONE: all requested steps finished");
+  Report ();
+
+  LmiPrint (L"LMI: LmiTouchPower done (errors=%u, reset=%u)\r\n\r\n", (UINT32)mErr, Reset ? 1 : 0);
+
+  if (Reset) {
+    ClearResetFlag ();
     gBS->Stall (3000000);
     gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
   }
