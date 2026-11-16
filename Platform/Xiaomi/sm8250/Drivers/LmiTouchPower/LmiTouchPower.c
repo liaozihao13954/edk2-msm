@@ -88,6 +88,12 @@ extern EFI_GUID  gQcomI2cProtocolGuid;
 #define LMI_PROBE_ALWAYS_RESET  1
 #endif
 
+STATIC
+VOID
+Report (
+  VOID
+  );
+
 STATIC CHAR8  mTx[4096];
 STATIC UINTN  mTxLen = 0;
 STATIC UINTN  mErr   = 0;
@@ -187,52 +193,75 @@ PowerUpTouchRail (
   EFI_STATUS                    Status;
   EFI_PM_VREG_STATUS_TYPE       St;
   UINT32                        Index;
-  UINT32                        Voltage;
   CHAR8                         Buf[200];
 
   Vreg   = NULL;
   Status = gBS->LocateProtocol (&gQcomPmicVregProtocolGuid, NULL, (VOID **)&Vreg);
+
+  AsciiSPrint (Buf, sizeof (Buf), "VREG: locate -> %r handle=%p", Status, Vreg);
+  TxLine (Buf);
+  Report ();
+
   if (EFI_ERROR (Status) || (Vreg == NULL)) {
-    TxFail ("VREG protocol missing", Status);
+    TxLine ("VREG: protocol unavailable, no rail control");
     return;
   }
 
+  AsciiSPrint (
+    Buf, sizeof (Buf),
+    "VREG: Revision lo=0x%08x hi=0x%08x",
+    (UINT32)(Vreg->Revision & 0xFFFFFFFFULL),
+    (UINT32)(Vreg->Revision >> 32)
+    );
+  TxLine (Buf);
+  Report ();
+
+  //
+  // Call the two oldest functions first (they sit at the front of the dispatch
+  // table, so they exist in every revision of this protocol) and only touch
+  // VregGetStatus/VregSetLevelUv afterwards - if the firmware implements an
+  // older/shorter table those two land on garbage and take the board down,
+  // which is exactly what happened last run.
+  //
   for (Index = 0; Index < LMI_MAX_PMIC_INDEX; Index++) {
-    ZeroMem (&St, sizeof (St));
-    Voltage = 0;
-
-    if (EFI_ERROR (Vreg->VregGetStatus (Index, LMI_TOUCH_VREG_ID, &St))) {
-      continue;
-    }
-
-    Vreg->VregGetLevel (Index, LMI_TOUCH_VREG_ID, &Voltage);
-    AsciiSPrint (
-      Buf, sizeof (Buf),
-      "VREG pmic[%u] LDO1 before: %u uV swEn=%u ok=%u",
-      Index, Voltage, St.SwEnable, St.VregOk
-      );
+    AsciiSPrint (Buf, sizeof (Buf), "VREG: pmic[%u] VregControl(TRUE)...", Index);
     TxLine (Buf);
-
-    Status = Vreg->VregSetLevelUv (Index, LMI_TOUCH_VREG_ID, LMI_TOUCH_VREG_UV);
-    if (EFI_ERROR (Status)) {
-      TxFail ("  VregSetLevelUv(1.8V)", Status);
-    }
+    Report ();
 
     Status = Vreg->VregControl (Index, LMI_TOUCH_VREG_ID, TRUE);
-    if (EFI_ERROR (Status)) {
-      TxFail ("  VregControl(enable)", Status);
-    }
+
+    AsciiSPrint (Buf, sizeof (Buf), "VREG:   Control -> %r", Status);
+    TxLine (Buf);
+    Report ();
+  }
+
+  for (Index = 0; Index < LMI_MAX_PMIC_INDEX; Index++) {
+    AsciiSPrint (Buf, sizeof (Buf), "VREG: pmic[%u] VregSetLevel(1800 mV)...", Index);
+    TxLine (Buf);
+    Report ();
+
+    Status = Vreg->VregSetLevel (Index, LMI_TOUCH_VREG_ID, 1800);
+
+    AsciiSPrint (Buf, sizeof (Buf), "VREG:   SetLevel -> %r", Status);
+    TxLine (Buf);
+    Report ();
+  }
+
+  for (Index = 0; Index < LMI_MAX_PMIC_INDEX; Index++) {
+    AsciiSPrint (Buf, sizeof (Buf), "VREG: pmic[%u] GetStatus...", Index);
+    TxLine (Buf);
+    Report ();
 
     ZeroMem (&St, sizeof (St));
-    Voltage = 0;
-    Vreg->VregGetLevel (Index, LMI_TOUCH_VREG_ID, &Voltage);
-    Vreg->VregGetStatus (Index, LMI_TOUCH_VREG_ID, &St);
+    Status = Vreg->VregGetStatus (Index, LMI_TOUCH_VREG_ID, &St);
+
     AsciiSPrint (
       Buf, sizeof (Buf),
-      "VREG pmic[%u] LDO1 after : %u uV swEn=%u ok=%u",
-      Index, Voltage, St.SwEnable, St.VregOk
+      "VREG:   -> %r swEn=%u ok=%u swMode=%u pinCtrled=%u pullDown=%u",
+      Status, St.SwEnable, St.VregOk, St.SwMode, St.PinCtrled, St.PullDown
       );
     TxLine (Buf);
+    Report ();
   }
 }
 
