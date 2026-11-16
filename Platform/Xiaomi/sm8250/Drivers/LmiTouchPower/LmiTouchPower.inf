@@ -25,6 +25,7 @@
   UefiDriverEntryPoint
   UefiBootServicesTableLib
   UefiRuntimeServicesTableLib
+  DxeServicesTableLib
   DebugLib
   BaseLib
   BaseMemoryLib
