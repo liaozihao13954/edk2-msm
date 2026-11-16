@@ -41,4 +41,11 @@
   gEfiEventReadyToBootGuid
 
 [Depex]
-  gQcomPmicVregProtocolGuid
+  #
+  # Deliberately TRUE.  Waiting on gQcomPmicVregProtocolGuid looked correct but
+  # on this firmware that protocol is never published, so the driver sat in the
+  # dispatch queue forever: no console output, no power-up, Windows booted with a
+  # dead panel.  Dispatch immediately and sequence the real work ourselves
+  # (protocols are looked up at ReadyToBoot time, when everything exists).
+  #
+  TRUE
