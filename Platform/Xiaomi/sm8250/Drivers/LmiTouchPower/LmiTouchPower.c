@@ -328,7 +328,7 @@ ProbeTouchChip (
 
   I2c    = NULL;
   Handle = NULL;
-  I2cStatus = I2C_ERROR;
+  I2cStatus = I2C_ERROR_ADDR_NACK;   // any non-success value; overwritten below
   Status = gBS->LocateProtocol (&gQcomI2cProtocolGuid, NULL, (VOID **)&I2c);
   if (EFI_ERROR (Status) || (I2c == NULL)) {
     TxFail ("I2C protocol missing", Status);
