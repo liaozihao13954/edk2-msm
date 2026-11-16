@@ -35,6 +35,7 @@
   gQcomI2cProtocolGuid
   gEfiSimpleFileSystemProtocolGuid
   gEfiBlockIoProtocolGuid
+  gEfiBdsArchProtocolGuid
 
 [Depex]
   gQcomPmicVregProtocolGuid
