@@ -77,6 +77,15 @@ extern EFI_GUID  gQcomI2cProtocolGuid;
 #define FILE_NAME(p)          ((CHAR16 *)(p))
 #define LMI_ESP_SECTORS       1048575ULL     // 512 MiB / 512 - 1
 
+//
+// build_probe.py rewrites this to 1 in the copy it pushes to the CI.  The
+// resulting probe image always cold-resets after the self test, so the whole
+// experiment runs itself - no flag file on the ESP required.
+//
+#ifndef LMI_PROBE_ALWAYS_RESET
+#define LMI_PROBE_ALWAYS_RESET  1
+#endif
+
 STATIC CHAR8  mTx[4096];
 STATIC UINTN  mTxLen = 0;
 STATIC UINTN  mErr   = 0;
@@ -474,6 +483,8 @@ WriteReport (
   if (EFI_ERROR (Status)) {
     TxFail ("no file system handles", Status);
   } else {
+    AsciiSPrint (Line, sizeof (Line), "ESP: %u file system volume(s)", (UINT32)Count);
+    TxLine (Line);
     for (Index = 0; Index < Count; Index++) {
       Fs   = NULL;
       Root = NULL;
@@ -483,18 +494,51 @@ WriteReport (
       if (EFI_ERROR (Fs->OpenVolume (Fs, &Root)) || (Root == NULL)) {
         continue;
       }
-      if (EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"))) {
+
+      //
+      // Windows may have been installed with bootmgfw, or the firmware may be
+      // starting \EFI\BOOT\BOOTAA64.EFI straight away, so accept either.
+      //
+      if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"))) {
+        TxLine ("ESP: matched \\EFI\\Microsoft\\Boot\\bootmgfw.efi");
+        Found = TRUE;
+        break;
+      }
+      if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI\\BOOT\\BOOTAA64.EFI"))) {
+        TxLine ("ESP: matched \\EFI\\BOOT\\BOOTAA64.EFI");
+        Found = TRUE;
+        break;
+      }
+      if (Root != NULL) {
         Root->Close (Root);
         Root = NULL;
-        continue;
       }
-      Found = TRUE;
-      break;
+    }
+
+    //
+    // Last resort: any volume that even has an \EFI directory.
+    //
+    if ((!Found) && (Count > 0)) {
+      for (Index = 0; Index < Count; Index++) {
+        Root = NULL;
+        if (EFI_ERROR (gBS->HandleProtocol (Handles[Index], &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs))) {
+          continue;
+        }
+        if (EFI_ERROR (Fs->OpenVolume (Fs, &Root)) || (Root == NULL)) {
+          continue;
+        }
+        if (!EFI_ERROR (ExistOnVolume (Root, L"\\EFI"))) {
+          TxLine ("ESP: fallback volume with \\EFI");
+          Found = TRUE;
+          break;
+        }
+        Root->Close (Root);
+        Root = NULL;
+      }
     }
   }
 
   if (Found && (Root != NULL)) {
-    TxLine ("ESP: found (volume holding \\EFI\\Microsoft\\Boot\\bootmgfw.efi)");
 
     //
     // probe flag first: delete it before anything else so a failed run can
@@ -603,9 +647,10 @@ LmiTouchPowerEntry (
 
   WriteReport (&DoReset);
 
-  LmiPrint (L"LMI: LmiTouchPower done (errors=%u, reset=%u)\r\n\r\n", (UINT32)mErr, DoReset ? 1 : 0);
+  LmiPrint (L"LMI: LmiTouchPower done (errors=%u, reset=%u, forced=%u)\r\n\r\n",
+            (UINT32)mErr, DoReset ? 1 : 0, LMI_PROBE_ALWAYS_RESET);
 
-  if (DoReset) {
+  if (DoReset || LMI_PROBE_ALWAYS_RESET) {
     gBS->Stall (3000000);
     gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
   }
