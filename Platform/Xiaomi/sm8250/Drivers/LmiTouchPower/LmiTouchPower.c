@@ -94,6 +94,18 @@ Report (
   VOID
   );
 
+STATIC
+VOID
+WriteRawTail (
+  VOID
+  );
+
+STATIC
+VOID
+OpenReport (
+  VOID
+  );
+
 STATIC CHAR8  mTx[4096];
 STATIC UINTN  mTxLen = 0;
 STATIC UINTN  mErr   = 0;
@@ -433,7 +445,8 @@ ProbeTouchChip (
 /* --------------------------------------------------------------- report ---- */
 
 STATIC EFI_FILE_PROTOCOL  *mRoot  = NULL;    // root of the volume holding Windows
-STATIC BOOLEAN             mEspOk = FALSE;
+STATIC BOOLEAN             mEspOk  = FALSE;
+STATIC EFI_FILE_PROTOCOL   *mReport = NULL;
 
 STATIC
 EFI_STATUS
@@ -665,47 +678,62 @@ WriteRawTail (
   gBS->FreePool (Handles);
 }
 
+//
+// The report file is opened once and rewritten from offset 0 on every call:
+// always the full 4 KiB buffer, so no truncation is ever needed and the FAT
+// driver never sees a delete/create cycle in the middle of the run.
+//
+STATIC
+VOID
+OpenReport (
+  VOID
+  )
+{
+  EFI_FILE_PROTOCOL  *File;
+  EFI_STATUS          Status;
+
+  if (mRoot == NULL) {
+    return;
+  }
+
+  File   = NULL;
+  Status = mRoot->Open (mRoot, &File, FILE_NAME (LMI_TX_FILE),
+                        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0);
+  if (!EFI_ERROR (Status) && (File != NULL)) {
+    File->Delete (File);
+  }
+
+  mReport = NULL;
+  Status  = mRoot->Open (
+                     mRoot,
+                     &mReport,
+                     FILE_NAME (LMI_TX_FILE),
+                     EFI_FILE_MODE_CREATE | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_READ,
+                     0
+                     );
+  if (EFI_ERROR (Status)) {
+    mReport = NULL;
+  }
+}
+
 STATIC
 VOID
 Report (
   VOID
   )
 {
-  EFI_FILE_PROTOCOL  *File;
-  EFI_STATUS          Status;
-  UINTN               Size;
+  UINTN  Size;
 
-  WriteRawTail ();
-
-  if (mRoot == NULL) {
+  if (mReport == NULL) {
     return;
   }
 
-  //
-  // delete + create so a shorter report never leaves stale tail bytes
-  //
-  File = NULL;
-  if (!EFI_ERROR (mRoot->Open (mRoot, &File, FILE_NAME (LMI_TX_FILE),
-                               EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, 0))
-      && (File != NULL))
-  {
-    File->Delete (File);
+  mReport->SetPosition (mReport, 0);
+  Size = sizeof (mTx);
+  if (EFI_ERROR (mReport->Write (mReport, &Size, mTx))) {
+    return;
   }
-
-  File   = NULL;
-  Status = mRoot->Open (
-                    mRoot,
-                    &File,
-                    FILE_NAME (LMI_TX_FILE),
-                    EFI_FILE_MODE_CREATE | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_READ,
-                    0
-                    );
-  if (!EFI_ERROR (Status) && (File != NULL)) {
-    Size = mTxLen;
-    File->Write (File, &Size, mTx);
-    File->Flush (File);
-    File->Close (File);
-  }
+  mReport->Flush (mReport);
 }
 
 /* ------------------------------------------------------------------ main --- */
@@ -830,6 +858,7 @@ OnDeferredWork (
   }
 
   FindEsp ();
+  OpenReport ();
   DoWork ();
 }
 
@@ -924,6 +953,8 @@ DoWork (
 
   TxLine ("DONE: all requested steps finished");
   Report ();
+  WriteRawTail ();
+  Report ();
 
   LmiPrint (
     L"LMI: LmiTouchPower done (errors=%u, reset=%u, esp=%u)\r\n\r\n",
@@ -931,6 +962,8 @@ DoWork (
     );
 
   if (Reset) {
+    TxLine ("RESETTING: clearing cfg, then cold reset");
+    Report ();
     ClearResetFlag ();
     gBS->Stall (3000000);
     gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
