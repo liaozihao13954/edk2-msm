@@ -43,6 +43,7 @@
 #include <Protocol/EFII2C.h>
 #include <Protocol/SimpleFileSystem.h>
 #include <Protocol/BlockIo.h>
+#include <Protocol/Bds.h>
 
 //
 // QcomPkg.dec exports the I2C protocol as gQcomI2cProtocolGuid (lowercase "c")
@@ -725,11 +726,81 @@ ClearResetFlag (
   File->Close (File);
 }
 
-EFI_STATUS
+STATIC EFI_EVENT  mFsEvent   = NULL;
+STATIC EFI_EVENT  mBdsEvent  = NULL;
+STATIC BOOLEAN    mWorkDone  = FALSE;
+
+STATIC
+VOID
+DoWork (
+  VOID
+  );
+
+STATIC
+BOOLEAN
+FsPresent (
+  VOID
+  )
+{
+  EFI_HANDLE  *Handles;
+  UINTN        Count;
+  BOOLEAN      Present;
+
+  Handles = NULL;
+  Count   = 0;
+  Present = FALSE;
+  if (!EFI_ERROR (gBS->LocateHandleBuffer (
+                        ByProtocol,
+                        &gEfiSimpleFileSystemProtocolGuid,
+                        NULL,
+                        &Count,
+                        &Handles
+                        )))
+  {
+    Present = (Count > 0);
+    gBS->FreePool (Handles);
+  }
+
+  return Present;
+}
+
+//
+// Runs once.  Preferred path: a FAT volume is already mounted, so the whole
+// transcript can be persisted.  Fallback (BDS has started and still no volume):
+// power the panel blind rather than leave it unpowered for Windows.
+//
+STATIC
+VOID
 EFIAPI
-LmiTouchPowerEntry (
-  IN EFI_HANDLE        ImageHandle,
-  IN EFI_SYSTEM_TABLE  *SystemTable
+OnDeferredWork (
+  IN EFI_EVENT  Event,
+  IN VOID      *Context
+  )
+{
+  if (mWorkDone) {
+    return;
+  }
+
+  FindEsp ();
+  mWorkDone = TRUE;
+
+  if (mFsEvent != NULL) {
+    gBS->CloseEvent (mFsEvent);
+    mFsEvent = NULL;
+  }
+
+  if (mBdsEvent != NULL) {
+    gBS->CloseEvent (mBdsEvent);
+    mBdsEvent = NULL;
+  }
+
+  DoWork ();
+}
+
+STATIC
+VOID
+DoWork (
+  VOID
   )
 {
   EFI_QCOM_TLMM_PROTOCOL  *Tlmm;
@@ -740,16 +811,13 @@ LmiTouchPowerEntry (
   BOOLEAN                  I2c;
   BOOLEAN                  Reset;
 
-  LmiPrint (L"\r\nLMI: LmiTouchPower v3 start\r\n");
   TxLine ("LMI-TOUCH-PROBE v3");
+  if (!mEspOk) {
+    TxLine ("WARN: no volume, running blind (console only)");
+  }
 
-  //
-  // Establish the telemetry channel before touching any hardware: if the phone
-  // dies later we still know which step killed it.
-  //
-  FindEsp ();
   LoadCfg (&Mux, &Gpio, &Vreg, &I2c, &Reset);
-  TxLine ("HEARTBEAT: driver entered, telemetry channel open");
+  TxLine ("HEARTBEAT: telemetry channel open");
   Report ();
 
   if (Vreg) {
@@ -791,13 +859,65 @@ LmiTouchPowerEntry (
   TxLine ("DONE: all requested steps finished");
   Report ();
 
-  LmiPrint (L"LMI: LmiTouchPower done (errors=%u, reset=%u)\r\n\r\n", (UINT32)mErr, Reset ? 1 : 0);
+  LmiPrint (
+    L"LMI: LmiTouchPower done (errors=%u, reset=%u, esp=%u)\r\n\r\n",
+    (UINT32)mErr, Reset ? 1 : 0, mEspOk ? 1 : 0
+    );
 
   if (Reset) {
     ClearResetFlag ();
     gBS->Stall (3000000);
     gRT->ResetSystem (EfiResetCold, EFI_SUCCESS, 0, NULL);
   }
+}
 
+EFI_STATUS
+EFIAPI
+LmiTouchPowerEntry (
+  IN EFI_HANDLE        ImageHandle,
+  IN EFI_SYSTEM_TABLE  *SystemTable
+  )
+{
+  EFI_STATUS  Status;
+
+  LmiPrint (L"\r\nLMI: LmiTouchPower v3 entry\r\n");
+
+  //
+  // Telemetry first.  If the FAT stack is not up yet the driver parks itself on
+  // a protocol notify instead of writing into the void; BDS entry is the last
+  // chance to run even without a volume.
+  //
+  if (FsPresent ()) {
+    OnDeferredWork (NULL, NULL);
+    return EFI_SUCCESS;
+  }
+
+  Status = gBS->CreateEventEx (
+                  EVT_NOTIFY_SIGNAL,
+                  TPL_CALLBACK,
+                  OnDeferredWork,
+                  NULL,
+                  &gEfiSimpleFileSystemProtocolGuid,
+                  &mFsEvent
+                  );
+  if (EFI_ERROR (Status)) {
+    LmiPrint (L"LMI: cannot wait for the file system (%r), running now\r\n", Status);
+    OnDeferredWork (NULL, NULL);
+    return EFI_SUCCESS;
+  }
+
+  Status = gBS->CreateEventEx (
+                  EVT_NOTIFY_SIGNAL,
+                  TPL_CALLBACK,
+                  OnDeferredWork,
+                  NULL,
+                  &gEfiBdsArchProtocolGuid,
+                  &mBdsEvent
+                  );
+  if (EFI_ERROR (Status)) {
+    mBdsEvent = NULL;
+  }
+
+  LmiPrint (L"LMI: waiting for a file system volume...\r\n");
   return EFI_SUCCESS;
 }
