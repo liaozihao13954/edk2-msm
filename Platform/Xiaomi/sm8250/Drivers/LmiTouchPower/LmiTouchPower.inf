@@ -1,5 +1,6 @@
 ## @file
-#  LmiTouchPower - power up the FTS touch panel and self-test the I2C link.
+#  LmiTouchPower - power up the FTS touch panel, mux its I2C pins, self-test the
+#  I2C link, and persist the transcript to the ESP (\\LMI_TX.TXT).
 #
 #  Depends only on the PMIC VREG protocol for dispatch ordering; the TLMM and I2C
 #  protocols are looked up at runtime and skipped gracefully if absent.
@@ -9,7 +10,7 @@
   BASE_NAME                      = LmiTouchPower
   FILE_GUID                      = 7f3c2a91-5b6e-4d84-9a17-3c8e5f2b9d41
   MODULE_TYPE                    = DXE_DRIVER
-  VERSION_STRING                 = 1.0
+  VERSION_STRING                 = 2.0
   ENTRY_POINT                    = LmiTouchPowerEntry
 
 [Sources]
@@ -23,6 +24,7 @@
 [LibraryClasses]
   UefiDriverEntryPoint
   UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
   DebugLib
   BaseMemoryLib
   PrintLib
@@ -31,6 +33,8 @@
   gQcomPmicVregProtocolGuid
   gQcomTlmmProtocolGuid
   gQcomI2cProtocolGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiBlockIoProtocolGuid
 
 [Depex]
   gQcomPmicVregProtocolGuid
