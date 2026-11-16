@@ -36,6 +36,14 @@
 #include <Protocol/EFITlmm.h>
 #include <Protocol/EFII2C.h>
 
+//
+// QcomPkg.dec exports the I2C protocol as gQcomI2cProtocolGuid (lowercase "c")
+// while EFII2C.h declares an extern spelled gQcomI2CProtocolGuid.  The symbol
+// that actually exists at link time is the dec one, so use that.
+//
+extern EFI_GUID gQcomI2cProtocolGuid;
+
+
 #define LMI_TOUCH_VREG_ID     EFI_PM_LDO_1
 #define LMI_TOUCH_VREG_UV     1800000
 #define LMI_MAX_PMIC_INDEX    6
@@ -153,7 +161,7 @@ ProbeTouchChip (
 
   I2c    = NULL;
   Handle = NULL;
-  Status = gBS->LocateProtocol (&gQcomI2CProtocolGuid, NULL, (VOID **)&I2c);
+  Status = gBS->LocateProtocol (&gQcomI2cProtocolGuid, NULL, (VOID **)&I2c);
   if (EFI_ERROR (Status) || (I2c == NULL)) {
     LmiPrint (L"LMI: I2C protocol missing (%r)\r\n", Status);
     return;
