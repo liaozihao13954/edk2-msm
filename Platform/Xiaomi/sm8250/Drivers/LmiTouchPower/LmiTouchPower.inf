@@ -30,7 +30,7 @@
 [Protocols]
   gQcomPmicVregProtocolGuid
   gQcomTlmmProtocolGuid
-  gQcomI2CProtocolGuid
+  gQcomI2cProtocolGuid
 
 [Depex]
   gQcomPmicVregProtocolGuid
