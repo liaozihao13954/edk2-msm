@@ -26,3 +26,6 @@
   gRenegadePkgTokenSpaceGuid.PcdDeviceVendor|"Xiaomi"
   gRenegadePkgTokenSpaceGuid.PcdDeviceProduct|"Poco F2"
   gRenegadePkgTokenSpaceGuid.PcdDeviceCodeName|"lmi"
+
+[Components.common]
+  Platform/Xiaomi/sm8250/Drivers/LmiTouchPower/LmiTouchPower.inf
