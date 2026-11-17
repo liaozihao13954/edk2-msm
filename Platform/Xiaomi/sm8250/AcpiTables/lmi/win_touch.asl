@@ -69,7 +69,7 @@ Device (TPD0)
     // hardware ID ACPI\FTS0001 matches only oem21.inf (FocalTechTouch).
     Name (_HID, "FTS0001")
     Name (_CID, "PNP0C50")
-    Name (_UID, 2)
+    Name (_UID, 3)
 
     Method (_STA, 0, NotSerialized) { Return (0x0F) }
 
