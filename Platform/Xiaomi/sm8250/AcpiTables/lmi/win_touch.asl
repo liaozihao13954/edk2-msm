@@ -54,12 +54,14 @@
 
 Device (TPD0)
 {
-    // FTS0001: vendor HID so the inbox hidi2c.sys (which only matches
-    // ACPI\PNP0C50) cannot grab this node. The injected FocalTechTouch.inf
-    // declares ACPI\FTS0001 and binds here instead.
-    // NOTE: _CID is intentionally omitted -- a PNP0C50 compatible-ID would
-    // let hidi2c match via compatible-ID and steal the device again.
+    // FTS0001 as the hardware ID: hardware IDs outrank compatible IDs during
+    // driver ranking, so the injected FocalTechTouch.inf (which declares
+    // ACPI\FTS0001) binds here instead of the inbox hidi2c.
+    // _CID = PNP0C50 is kept so the PnP/power path treats this as a standard
+    // I2C-HID device.  Without it the FTS0001 node drove qci2c into a
+    // PoFx assertion (0xA0 INTERNAL_POWER_ERROR, P1=0xBEEF) during device start.
     Name (_HID, "FTS0001")
+    Name (_CID, "PNP0C50")
     Name (_UID, 1)
 
     Method (_STA, 0, NotSerialized) { Return (0x0F) }
