@@ -60,9 +60,16 @@ Device (TPD0)
     // _CID = PNP0C50 is kept so the PnP/power path treats this as a standard
     // I2C-HID device.  Without it the FTS0001 node drove qci2c into a
     // PoFx assertion (0xA0 INTERNAL_POWER_ERROR, P1=0xBEEF) during device start.
+    // _UID forces a fresh device instance.  With _UID=1 the node ACPI\FTS0001\1
+    // had already been bound to hidi2c (ConfigFlags=0, Service=hidi2c) during the
+    // first enumeration -- before the fixed driver package existed.  PnP never
+    // re-runs driver ranking for an already-installed devnode, and the Enum key
+    // ACL only lets SYSTEM delete it.  Bumping _UID to 2 makes Windows create a
+    // brand-new instance (ACPI\FTS0001\2) which is ranked from scratch:
+    // hardware ID ACPI\FTS0001 matches only oem21.inf (FocalTechTouch).
     Name (_HID, "FTS0001")
     Name (_CID, "PNP0C50")
-    Name (_UID, 1)
+    Name (_UID, 2)
 
     Method (_STA, 0, NotSerialized) { Return (0x0F) }
 
