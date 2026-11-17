@@ -93,37 +93,17 @@ Device (TPD0)
     OperationRegion (TLV0, SystemMemory, 0x0F048000, 0x00000008)   // GPIO72 VDD
     Field (TLV0, DWordAcc, NoLock, Preserve) { VCFG, 32, VIO, 32 }
 
-    // Runs before the function driver starts, so the pins are already owned by
-    // QUP13 and the panel is powered + out of reset when the first transaction
-    // happens.  Windows has no DT regulator framework -- nothing else in the
-    // OS would ever raise vdd / release reset.
+    // v6: the VDD(GPIO72) / RESET(GPIO38) sequence that used to live here was
+    // REMOVED.  With it enabled the system took a repeatable
+    //   BUGCHECK 0xA0 INTERNAL_POWER_ERROR  P1=0xBEEF P2=0x8003
+    // and the minidump carried qci2c but no FocalTechTouch at all, i.e. it died
+    // during the I2C controller's D0 transition, before the function driver ran.
+    // Powering the panel inside _INI lets it drive its attention line (GPIO39)
+    // while nothing owns that pin yet, which wedges the controller.
+    // Panel power/reset has to happen BEFORE the OS boots, i.e. in DXE.
     Method (_INI, 0, NotSerialized)
     {
-        // --- 1. VDD enable (GPIO72, active high) ---
-        Local0 = VCFG
-        And (Local0, 0xFFFFFC03, Local0)        // FUNC_SEL = 0 (plain GPIO), keep DRV
-        Or (Local0, 0x00002000, Local0)         // OE = 1
-        VCFG = Local0
-        Local0 = VIO
-        Or (Local0, 0x00000001, Local0)         // OUT = 1
-        VIO = Local0
-        Sleep (20)
-
-        // --- 2. Reset pulse (GPIO38, active low) ---
-        Local0 = RCFG
-        And (Local0, 0xFFFFFC03, Local0)
-        Or (Local0, 0x00002000, Local0)         // OE = 1
-        RCFG = Local0
-        Local0 = RIO
-        And (Local0, 0xFFFFFFFE, Local0)        // OUT = 0 -> reset asserted
-        RIO = Local0
-        Sleep (20)
-        Local0 = RIO
-        Or (Local0, 0x00000001, Local0)         // OUT = 1 -> reset released
-        RIO = Local0
-        Sleep (120)                             // panel boot time
-
-        // --- 3. SDA/SCL mux to QUP13 ---
+        // --- SDA/SCL mux to QUP13 ---
         // SDA = GPIO36
         Local0 = GCFG
         And (Local0, 0xFFFFFC03, Local0)        // keep DRV/OE, drop PULL+FUNC
