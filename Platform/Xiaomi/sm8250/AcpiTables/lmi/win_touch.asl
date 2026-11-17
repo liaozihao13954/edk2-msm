@@ -54,8 +54,12 @@
 
 Device (TPD0)
 {
-    Name (_HID, EisaId ("PNP0C50"))
-    Name (_CID, "PNP0C50")
+    // FTS0001: vendor HID so the inbox hidi2c.sys (which only matches
+    // ACPI\PNP0C50) cannot grab this node. The injected FocalTechTouch.inf
+    // declares ACPI\FTS0001 and binds here instead.
+    // NOTE: _CID is intentionally omitted -- a PNP0C50 compatible-ID would
+    // let hidi2c match via compatible-ID and steal the device again.
+    Name (_HID, "FTS0001")
     Name (_UID, 1)
 
     Method (_STA, 0, NotSerialized) { Return (0x0F) }
