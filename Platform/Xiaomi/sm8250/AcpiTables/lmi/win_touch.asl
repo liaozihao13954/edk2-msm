@@ -80,10 +80,50 @@ Device (TPD0)
     OperationRegion (TLM1, SystemMemory, 0x0F025000, 0x00000004)   // GPIO37 (SCL)
     Field (TLM1, DWordAcc, NoLock, Preserve) { GCFH, 32 }
 
-    // Runs before hidi2c starts, so the pins are already owned by QUP13 when
-    // the first I2C-HID descriptor read happens.
+    // Power / reset pins -- these were completely missing until now.  From the
+    // live FDT:  focaltech,reset-gpio = <&tlmm 38 1>  (active low)
+    //             focaltech,vdd-gpio   = <&tlmm 72 0>  (active high)
+    // TLMM base = 0x0F000000, stride = 0x1000 per pin:
+    //   GPIO38 -> 0x0F026000,  GPIO72 -> 0x0F048000
+    // Per-pin block: +0x0 GPIO_CFG (OE = bit13, FUNC_SEL = [9:2], PULL = [1:0])
+    //                +0x4 GPIO_IN_OUT (bit0 = OUT value)
+    OperationRegion (TLR0, SystemMemory, 0x0F026000, 0x00000008)   // GPIO38 RESET
+    Field (TLR0, DWordAcc, NoLock, Preserve) { RCFG, 32, RIO, 32 }
+
+    OperationRegion (TLV0, SystemMemory, 0x0F048000, 0x00000008)   // GPIO72 VDD
+    Field (TLV0, DWordAcc, NoLock, Preserve) { VCFG, 32, VIO, 32 }
+
+    // Runs before the function driver starts, so the pins are already owned by
+    // QUP13 and the panel is powered + out of reset when the first transaction
+    // happens.  Windows has no DT regulator framework -- nothing else in the
+    // OS would ever raise vdd / release reset.
     Method (_INI, 0, NotSerialized)
     {
+        // --- 1. VDD enable (GPIO72, active high) ---
+        Local0 = VCFG
+        And (Local0, 0xFFFFFC03, Local0)        // FUNC_SEL = 0 (plain GPIO), keep DRV
+        Or (Local0, 0x00002000, Local0)         // OE = 1
+        VCFG = Local0
+        Local0 = VIO
+        Or (Local0, 0x00000001, Local0)         // OUT = 1
+        VIO = Local0
+        Sleep (20)
+
+        // --- 2. Reset pulse (GPIO38, active low) ---
+        Local0 = RCFG
+        And (Local0, 0xFFFFFC03, Local0)
+        Or (Local0, 0x00002000, Local0)         // OE = 1
+        RCFG = Local0
+        Local0 = RIO
+        And (Local0, 0xFFFFFFFE, Local0)        // OUT = 0 -> reset asserted
+        RIO = Local0
+        Sleep (20)
+        Local0 = RIO
+        Or (Local0, 0x00000001, Local0)         // OUT = 1 -> reset released
+        RIO = Local0
+        Sleep (120)                             // panel boot time
+
+        // --- 3. SDA/SCL mux to QUP13 ---
         // SDA = GPIO36
         Local0 = GCFG
         And (Local0, 0xFFFFFC03, Local0)        // keep DRV/OE, drop PULL+FUNC
@@ -104,8 +144,19 @@ Device (TPD0)
             // 400 kHz fast mode, 7-bit slave 0x38 on \_SB.I2C0 (SE13)
             I2cSerialBusV2 (0x0038, ControllerInitiated, 0x00061A80,
                 AddressingMode7Bit, "\\_SB.I2C0", 0x00, ResourceConsumer, , Exclusive, )
-            // HID-I2C attention line: Level, ActiveLow, Exclusive (spec)
-            GpioInt (Level, ActiveLow, Exclusive, PullUp, 0x0000,
+            // Touch attention line, read straight out of the live FDT in TWRP:
+            //   /proc/device-tree/soc/i2c@a94000/focaltech@38
+            //     interrupts              = <39 0x2002>   -> GPIO 39, IRQ_TYPE_EDGE_FALLING
+            //     interrupt-parent        = 0x65          -> &tlmm
+            //     focaltech,irq-gpio      = <0x65 0x27 2> -> GPIO 39
+            //     focaltech,reset-gpio    = <0x65 0x26 1> -> GPIO 38, active low
+            //     focaltech,vdd-gpio      = <0x65 0x48 0> -> GPIO 72
+            //   GPIO numbering below is absolute on \_SB.GPIO (tlmm base 0).
+            // EDGE + ActiveLow, not Level: 0x2002 is explicitly edge-falling and
+            // the panel pulses its attention line.  A Level GpioInt here never
+            // deasserts (the line is only low while the ISR is pending), so the
+            // interrupt latches and no input report is ever produced.
+            GpioInt (Edge, ActiveLow, Exclusive, PullUp, 0x0000,
                 "\\_SB.GPIO", 0x00, ResourceConsumer, , ) { 39 }
         })
         Return (RBUF)
